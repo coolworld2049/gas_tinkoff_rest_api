@@ -4,6 +4,8 @@
 
 ## Установка
 
+![installation.mp4](assets%2Finstallation.mp4)
+
 Вы можете использовать готовый шаблон [template.xlsx](template.xlsx) который необходимо импортировать в Google
 Spreadsheets
 
