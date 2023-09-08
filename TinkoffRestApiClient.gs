@@ -539,7 +539,7 @@ class _TinkoffClientV2 {
 
   _GetSandboxPortfolio(accountId, currency) {
     const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxPortfolio';
-    const data = this._makeApiCall(url, {"accountId": accountId, "currency": "RUB"});
+    const data = this._makeApiCall(url, {"accountId": accountId, "currency": currency});
     return data;
   }
 
@@ -739,17 +739,20 @@ function TI_GetBidAskSpread(ticker) {
 /**
  * Получение портфеля
  * @param {"12345678"} accountId  Номер брокерского счета
+ * @param {"RUB"}      currency   ISO валюта
+ * @param {"false"}    isSandbox  Режим песочницы
  * @return {Array}                Массив с результатами
  * @customfunction
  **/
-function TI_GetPortfolio(accountId) {
-  const portfolio = tinkoffClientV2._GetPortfolio(accountId)
+function TI_GetPortfolio(accountId, currency, isSandbox) {
+  const portfolio = isSandbox == false ? tinkoffClientV2._GetPortfolio(accountId) : tinkoffClientV2._GetSandboxPortfolio(accountId,currency)
   const values = []
   values.push(["Тикер","Название","Тип","Кол-во","Ср.цена покупки","Ст-ть покупки","Валюта","Доход","Тек.ст-ть","Валюта","НКД","Валюта"])
   for (let i=0; i<portfolio.positions.length; i++) {
     const [ticker,name] = _GetTickerNameByFIGI(portfolio.positions[i].figi)
     let quantity = Number(portfolio.positions[i].quantity.units) + portfolio.positions[i].quantity.nano/1000000000
-    let averagePositionPrice = Number(portfolio.positions[i].averagePositionPrice.units) + portfolio.positions[i].averagePositionPrice.nano/1000000000
+    let averagePositionPrice = portfolio.positions[i].averagePositionPrice ?
+      Number(portfolio.positions[i].averagePositionPrice.units) + portfolio.positions[i].averagePositionPrice.nano/1000000000 : null
     let currentNkd=null
     let currentNkd_currency=null
     if(portfolio.positions[i].currentNkd) {
@@ -763,10 +766,10 @@ function TI_GetPortfolio(accountId) {
       quantity,
       averagePositionPrice,
       quantity * averagePositionPrice,
-      portfolio.positions[i].averagePositionPrice.currency,
-      Number(portfolio.positions[i].expectedYield.units) + portfolio.positions[i].expectedYield.nano/1000000000,
-      (Number(portfolio.positions[i].currentPrice.units) + portfolio.positions[i].currentPrice.nano/1000000000) * quantity,
-      portfolio.positions[i].currentPrice.currency,
+      portfolio.positions[i].averagePositionPrice ? portfolio.positions[i].averagePositionPrice.currency : null,
+      portfolio.positions[i].expectedYield ? Number(portfolio.positions[i].expectedYield.units) + portfolio.positions[i].expectedYield.nano/1000000000 : null,
+      portfolio.positions[i].currentPrice ? (Number(portfolio.positions[i].currentPrice.units) + portfolio.positions[i].currentPrice.nano/1000000000) * quantity : null,
+      portfolio.positions[i].currentPrice ? portfolio.positions[i].currentPrice.currency : null,
       currentNkd,
       currentNkd_currency
     ])

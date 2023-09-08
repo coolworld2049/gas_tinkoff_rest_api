@@ -23,6 +23,7 @@ Spreadsheets
     * orderType
     * direction
     * operationState
+    * CurrencyIsoCode
 
 1. В меню "Tools" выбрать "Script Editor".Дать проекту имя, например `TinkoffAPI`
 
