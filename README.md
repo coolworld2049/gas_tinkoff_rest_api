@@ -4,7 +4,8 @@
 
 ## Установка
 
-![installation.mp4](assets%2Finstallation.mp4)
+https://github.com/coolworld2049/gas_tinkoff_rest_api/assets/82733942/a0b2b17f-2bf8-4a1b-9829-31217d40c928
+
 
 Вы можете использовать готовый шаблон [template.xlsx](template.xlsx) который необходимо импортировать в Google
 Spreadsheets
