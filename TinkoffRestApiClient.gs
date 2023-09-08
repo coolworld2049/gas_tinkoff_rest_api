@@ -1,13 +1,14 @@
-/** @OnlyCurrentDoc */
 
-const scriptProperties = PropertiesService.getScriptProperties()
-const OPENAPI_TOKEN = scriptProperties.getProperty('OPENAPI_TOKEN')
+/**@NotOnlyCurrentDoc */
+// https://github.com/ErhoSen/gas-tinkoff-trades
 
+const OPENAPI_TOKEN = ""
 const CACHE = CacheService.getScriptCache()
-const CACHE_MAX_AGE = 21600 // 6 Hours
-
+const CACHE_MAX_AGE = 60 * 60 * 6 // 6 Hours
 const TRADING_START_AT = new Date('Apr 01, 2020 10:00:00')
 const MILLIS_PER_DAY = 1000 * 60 * 60 * 24
+const REFRESH_EVERY_SEC = 2;
+
 
 /**
  * Добавляет меню с командой вызова функции обновления значений служебной ячейки (для обновления вычислнений функций, ссылающихся на эту ячейку)
@@ -18,9 +19,19 @@ function onOpen() {
   var entries = [{
     name : "Обновить",
     functionName : "refresh"
-  }]
+  },
+  {
+    name : "Запуск обновления",
+    functionName : "runRefresh"
+  },
+  {
+    name : "Остановка обновления",
+    functionName : "stopRefresh"
+  }
+  ]
   sheet.addMenu("TI", entries)
 };
+
 
 function _convertRangeToOneCell(range){
   if (range == null) return;
@@ -29,11 +40,54 @@ function _convertRangeToOneCell(range){
 }
 
 function refresh() {
-  const updateDateRange = _convertRangeToOneCell(SpreadsheetApp.getActiveSpreadsheet().getRangeByName('UPDATE_DATE'));
-  if (updateDateRange != null) {
-    updateDateRange.setValue(new Date());
+  const updateRange = SpreadsheetApp.getActiveSpreadsheet().getRangeByName('UPDATE_DATE');
+  const updateDateRange = _convertRangeToOneCell(updateRange);
+  Logger.log(`refresh range ${updateDateRange.getA1Notation()}`)
+  if ((updateDateRange != null) && (checkIsUpdatedCell() == true)) {
+    updateDateRange.setValue(Utilities.formatDate(new Date(), "GMT+3", "MM-dd-yyyy HH:mm:ss"));
   } else {
     SpreadsheetApp.getUi().ui.alert('You should specify the named range "UPDATE_DATE" for using this function.');
+  }
+}
+
+/**
+ * Управление циклическим обновлением значений акций
+ */
+
+function runRefresh() {
+  const updateRange = SpreadsheetApp.getActiveSpreadsheet().getRangeByName('UPDATE_DATE');
+  for (i=0; i<43200; i++){
+    var flag = checkIsUpdatedCell();
+    if (flag == false) {
+      counter = 0;
+      return null;
+    }
+    updateRange.setBackground(null);
+    Utilities.sleep(1000 * REFRESH_EVERY_SEC);
+    refresh();
+    updateRange.setBackgroundRGB(123, 229, 152);
+  }
+}
+
+function stopRefresh() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet();
+  var isUpdatedRange = _convertRangeToOneCell(sheet.getRangeByName("IS_UPDATED"));
+  var flag = checkIsUpdatedCell();
+  if (flag == true) {
+    isUpdatedRange.setValue(false);
+    Logger.log(`IS_UPDATED forced to ${isUpdatedRange.getValue()}`)
+  }
+}
+
+function checkIsUpdatedCell() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet();
+  var isUpdatedRange = _convertRangeToOneCell(sheet.getRangeByName("IS_UPDATED"));
+  if (isUpdatedRange != null) {
+    var value = isUpdatedRange.getValue();
+    Logger.log(`IS_UPDATED == ${value}`)
+    return value;
+  } else {
+    SpreadsheetApp.getUi().ui.alert('You should specify the named range "IS_UPDATED" for using this function.');
   }
 }
 
@@ -44,14 +98,14 @@ function isoToDate(dateStr){
   return new Date(str)
 }
 
-class TinkoffClient {
+class TinkoffClientV1 {
   // Doc: https://tinkoffcreditsystems.github.io/invest-openapi/swagger-ui/
   // How to create a token: https://tinkoffcreditsystems.github.io/invest-openapi/auth/
   constructor(token) {
     this.token = token
     this.baseUrl = 'https://api-invest.tinkoff.ru/openapi/'
   }
-  
+
   _makeApiCall(methodUrl) {
     const url = this.baseUrl + methodUrl
     Logger.log(`[API Call] ${url}`)
@@ -60,43 +114,47 @@ class TinkoffClient {
     if (response.getResponseCode() == 200)
       return JSON.parse(response.getContentText())
   }
-  
+
   getInstrumentByTicker(ticker) {
     const url = `market/search/by-ticker?ticker=${ticker}`
-    const data = this._makeApiCall(url)
+    const data = this._makeApiCall(url, {})
     return data.payload
   }
-  
+
   getOrderbookByFigi(figi, depth) {
     const url = `market/orderbook?depth=${depth}&figi=${figi}`
-    const data = this._makeApiCall(url)
+    const data = this._makeApiCall(url, {})
     return data.payload
   }
-  
+
   getOperations(from, to, figi) {
     // Arguments `from` && `to` should be in ISO 8601 format
     const url = `operations?from=${from}&to=${to}&figi=${figi}`
-    const data = this._makeApiCall(url)
+    const data = this._makeApiCall(url, {})
     return data.payload.operations
   }
 
   getPortfolio(){
     const url = `portfolio`
-    const data = this._makeApiCall(url)
+    const data = this._makeApiCall(url, {})
     return data.payload.positions
   }
 }
 
-const tinkoffClient = new TinkoffClient(OPENAPI_TOKEN)
+/**  ============================== Tinkoff V1 ==============================
+*
+*
+**/
+const tinkoffClientV1 = new TinkoffClientV1(OPENAPI_TOKEN)
 
 function _getFigiByTicker(ticker) {
   const CACHE_KEY_PREFIX = 'figi_'
   const ticker_cache_key = CACHE_KEY_PREFIX + ticker
 
   const cached = CACHE.get(ticker)
-  if (cached != null) 
+  if (cached != null)
     return cached
-  const {instruments,total} = tinkoffClient.getInstrumentByTicker(ticker)
+  const {instruments,total} = tinkoffClientV1.getInstrumentByTicker(ticker)
   if (total > 0) {
     const figi = instruments[0].figi
     CACHE.put(ticker_cache_key, figi, CACHE_MAX_AGE)
@@ -116,7 +174,7 @@ function getPriceByTicker(ticker, dummy) {
   // dummy attribute uses for auto-refreshing the value each time the sheet is updating.
   // see https://stackoverflow.com/a/27656313
   const figi = _getFigiByTicker(ticker)
-  const {lastPrice} = tinkoffClient.getOrderbookByFigi(figi, 1)
+  const {lastPrice} = tinkoffClientV1.getOrderbookByFigi(figi, 1)
   return lastPrice
 }
 
@@ -128,7 +186,7 @@ function getPriceByTicker(ticker, dummy) {
  */
 function getBidAskSpreadByTicker(ticker) { // dummy parameter is optional
   const figi = _getFigiByTicker(ticker)
-  const {tradeStatus,bids,asks} = tinkoffClient.getOrderbookByFigi(figi, 1)
+  const {tradeStatus,bids,asks} = tinkoffClientV1.getOrderbookByFigi(figi, 1)
   if (tradeStatus != 'NotAvailableForTrading')
     return (asks[0].price-bids[0].price) / asks[0].price
   else
@@ -139,7 +197,7 @@ function getMaxBidByTicker(ticker, dummy) {
   // dummy attribute uses for auto-refreshing the value each time the sheet is updating.
   // see https://stackoverflow.com/a/27656313
   const figi = _getFigiByTicker(ticker)
-  const {tradeStatus,bids} = tinkoffClient.getOrderbookByFigi(figi, 1)
+  const {tradeStatus,bids} = tinkoffClientV1.getOrderbookByFigi(figi, 1)
   if (tradeStatus != 'NotAvailableForTrading')
     return [
     ["Max bid", "Quantity"],
@@ -153,7 +211,7 @@ function getMinAskByTicker(ticker, dummy) {
   // dummy attribute uses for auto-refreshing the value each time the sheet is updating.
   // see https://stackoverflow.com/a/27656313
   const figi = _getFigiByTicker(ticker)
-  const {tradeStatus,asks} = tinkoffClient.getOrderbookByFigi(figi, 1)
+  const {tradeStatus,asks} = tinkoffClientV1.getOrderbookByFigi(figi, 1)
   if (tradeStatus != 'NotAvailableForTrading')
     return [
       ["Min ask", "Quantity"],
@@ -193,10 +251,10 @@ function getTrades(ticker, from, to) {
     to = new Date(now + MILLIS_PER_DAY)
     to = to.toISOString()
   }
-  const operations = tinkoffClient.getOperations(from, to, figi)
-  
+  const operations = tinkoffClientV1.getOperations(from, to, figi)
+
   const values = [
-    ["ID", "Date", "Operation", "Ticker", "Quantity", "Price", "Currency", "SUM", "Commission"], 
+    ["ID", "Date", "Operation", "Ticker", "Quantity", "Price", "Currency", "SUM", "Commission"],
   ]
   for (let i=operations.length-1; i>=0; i--) {
     const {operationType, status, trades, id, date, currency, commission} = operations[i]
@@ -226,7 +284,7 @@ function getTrades(ticker, from, to) {
  * @customfunction
  */
 function getPortfolio() {
-  const portfolio = tinkoffClient.getPortfolio()
+  const portfolio = tinkoffClientV1.getPortfolio()
   const values = []
   values.push(["Тикер","Название","Тип","Кол-во","Ср.цена покупки","Ст-ть покупки","Валюта","Доход","Тек.ст-ть","Валюта","НКД","Валюта"])
   for (let i=0; i<portfolio.length; i++) {
@@ -249,12 +307,13 @@ function getPortfolio() {
 /**  ============================== Tinkoff V2 ==============================
 *
 * https://tinkoff.github.io/investAPI/
+* https://tinkoff.github.io/investAPI/swagger-ui/
 *
 **/
 class _TinkoffClientV2 {
   constructor(token){
     this.token = token
-    this.baseUrl = 'https://invest-public-api.tinkoff.ru/rest/'
+    this.baseUrl = "https://invest-public-api.tinkoff.ru/rest/";
     //Logger.log(`[_TinkoffClientV2.constructor]`)
   }
   _makeApiCall(methodUrl,data){
@@ -267,14 +326,14 @@ class _TinkoffClientV2 {
       'payload' : JSON.stringify(data),
       'muteHttpExceptions': true
     }
-    
+
     let respCode, respText, rateLimited;
     do {
       const response = UrlFetchApp.fetch(url, params);
       const respHeaders = response.getAllHeaders();
       respCode = response.getResponseCode();
       respText = response.getContentText("UTF-8");
-      
+
       rateLimited = Boolean(respHeaders['x-envoy-ratelimited']); // {x-ratelimit-reset, x-envoy-ratelimited, x-ratelimit-remaining}
       if (rateLimited) { // Выжидаем конец периода квоты запросов
         const timeToWait = 500+1000*Number(respHeaders ['x-ratelimit-reset']);
@@ -289,6 +348,9 @@ class _TinkoffClientV2 {
       return respObj
     else
       throw new Error(`Ошибка ${respCode} - ${respObj.message} - ${respObj.description}`);
+  }
+  _UnitsNanoToPrice(units, nano) {
+    return Number(units) + nano/1000000000;
   }
   // ----------------------------- InstrumentsService -----------------------------
   _Bonds(instrumentStatus) {
@@ -309,6 +371,16 @@ class _TinkoffClientV2 {
   _Etfs(instrumentStatus) {
     const url = `tinkoff.public.invest.api.contract.v1.InstrumentsService/Etfs`
     const data = this._makeApiCall(url, {'instrumentStatus': instrumentStatus})
+    return data
+  }
+  _FindInstrument(query, instrumentKind, apiTradeAvailableFlag) {
+    var requestBody = {
+    "query": query,
+    "instrumentKind": instrumentKind,
+    "apiTradeAvailableFlag": apiTradeAvailableFlag ? apiTradeAvailableFlag : true
+  }
+    const url = `tinkoff.public.invest.api.contract.v1.InstrumentsService/FindInstrument`
+    const data = this._makeApiCall(url, requestBody)
     return data
   }
   _Currencies(instrumentStatus) {
@@ -348,9 +420,222 @@ class _TinkoffClientV2 {
     const data = this._makeApiCall(url,{'accountId': accountId})
     return data
   }
+  // ----------------------------- OrdersService ----------------------------
+  _CancelOrder(accountId, orderId) {
+    const url = 'tinkoff.public.invest.api.contract.v1.OrdersService/CancelOrder';
+    const data = this._makeApiCall(url, {'accountId': accountId, 'orderId': orderId});
+    return data;
+  }
+  _GetOrderState(accountId, orderId) {
+    const url = 'tinkoff.public.invest.api.contract.v1.OrdersService/GetOrderState';
+    const data = this._makeApiCall(url, {'accountId': accountId, 'orderId': orderId});
+    return data;
+  }
+  _GetOrders(accountId) {
+    const url = 'tinkoff.public.invest.api.contract.v1.OrdersService/GetOrders';
+    const data = this._makeApiCall(url, {'accountId': accountId});
+    return data;
+  }
+  _PostOrder(figi,quantity,priceNano,priceUnits,direction,accountId,orderType) {
+    var requestBody = {
+      "figi": figi,
+      "quantity": quantity,
+      "price": {
+        "nano": priceNano, //целая часть суммы, может быть отрицательным числом
+        "units": priceUnits //дробная часть суммы, может быть отрицательным числом
+      },
+      "direction": direction,
+      "accountId": accountId,
+      "orderType": orderType,
+    }
+    const url = 'tinkoff.public.invest.api.contract.v1.OrdersService/PostOrder';
+    var data = null;
+    try {
+        data = this._makeApiCall(url, requestBody);
+        SpreadsheetApp.getUi().alert(JSON.stringify(data));
+      }
+      catch (e) {
+        SpreadsheetApp.getUi().alert(e.toString());
+      }
+    return data;
+  }
+  _ReplaceOrder(accountId,orderId,idempotencyKey,quantity,priceNano,priceUnits,price_type) {
+    requestBody = {
+      "accountId": accountId,
+      "orderId": orderId,
+      "idempotencyKey": idempotencyKey,
+      "quantity": quantity,
+      "price": {
+        "nano": priceNano,
+        "units": priceUnits
+      },
+      "priceType": price_type
+    }
+    const url = 'tinkoff.public.invest.api.contract.v1.OrdersService/ReplaceOrder';
+    const data = this._makeApiCall(url, requestBody);
+    return data;
+  }
+  // ----------------------------- SandboxService ---------------------------
+  _CancelSandboxOrder(accountId,orderId) {
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/CancelSandboxOrder';
+    const data = this._makeApiCall(url, {'accountId': accountId, 'orderId': orderId});
+    return data;
+  }
+
+  _CloseSandboxAccount(accountId) {
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/CloseSandboxAccount';
+    const data = this._makeApiCall(url, {'accountId': accountId});
+    return data;
+  }
+
+  _GetSandboxAccounts() {
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxAccounts';
+    const data = this._makeApiCall(url, {});
+    return data;
+  }
+
+  _GetSandboxOperations(accountId,fromDate,toDate,state) {
+    var requestBody = {
+    "accountId": accountId,
+    "from": fromDate,
+    "to": toDate,
+    "state": state,
+    }
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxOperations';
+    const data = this._makeApiCall(url, requestBody);
+    return data;
+  }
+
+  _GetSandboxOperationsByCursor(accountId,instrumentId,fromDate,toDate,cursor,limit,operationTypesList,state, withoutCommissions, withoutTrades, withoutOvernights) {
+    var requestBody = {
+    "accountId": accountId,
+    "instrumentId": instrumentId,
+    "from": fromDate,
+    "to": toDate,
+    "cursor": cursor,
+    "limit": limit,
+    "operationTypes": operationTypesList,
+    "state": state,
+    "withoutCommissions": withoutCommissions,
+    "withoutTrades": withoutTrades,
+    "withoutOvernights": withoutOvernights
+    }
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxOperationsByCursor';
+    const data = this._makeApiCall(url, requestBody);
+    return data;
+  }
+
+  _GetSandboxOrderState(accountId,orderId) {
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxOrderState';
+    const data = this._makeApiCall(url, {'accountId': accountId, 'orderId': orderId});
+    return data;
+  }
+
+  _GetSandboxOrders(accountId) {
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxOrders';
+    const data = this._makeApiCall(url, {"accountId": accountId});
+    return data;
+  }
+
+  _GetSandboxPortfolio(accountId, currency) {
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxPortfolio';
+    const data = this._makeApiCall(url, {"accountId": accountId, "currency": "RUB"});
+    return data;
+  }
+
+  _GetSandboxPositions(accountId) {
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxPositions';
+    const data = this._makeApiCall(url, {"accountId": accountId});
+    return data;
+  }
+
+  _GetSandboxWithdrawLimits(accountId) {
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/GetSandboxWithdrawLimits';
+    const data = this._makeApiCall(url, {"accountId": accountId});
+    return data;
+  }
+
+  _OpenSandboxAccount() {
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/OpenSandboxAccount';
+    const data = this._makeApiCall(url, {});
+    return data;
+  }
+
+  _PostSandboxOrder(figi,
+    quantity,
+    priceNano,
+    priceUnits,
+    direction,
+    accountId,
+    orderType) {
+    var requestBody = {
+      "figi": figi,
+      "quantity": quantity,
+      "price": {
+        "nano": priceNano,
+        "units": priceUnits
+      },
+      "direction": direction,
+      "accountId": accountId,
+      "orderType": orderType
+    }
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/PostSandboxOrder';
+    var data = null;
+    try {
+        data = this._makeApiCall(url, requestBody);
+        SpreadsheetApp.getUi().alert(JSON.stringify(data));
+      }
+      catch (e) {
+        SpreadsheetApp.getUi().alert(e.toString());
+      }
+    return data;
+  }
+
+  _ReplaceSandboxOrder(
+    accountId,
+    orderId,
+    idempotencyKey,
+    quantity,
+    priceNano,
+    priceUnits,
+    price_type) {
+    var requestBody = {
+      "accountId": accountId,
+      "orderId": orderId,
+      "idempotencyKey": idempotencyKey,
+      "quantity": quantity,
+      "price": {
+        "nano": priceNano,
+        "units": priceUnits,
+        "type": price_type
+      }
+    };
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/ReplaceSandboxOrder';
+    const data = this._makeApiCall(url, requestBody);
+    return data;
+  }
+
+  _SandboxPayIn(accountId,amount_nano,amount_currency,amount_units) {
+    var requestBody = {
+      "accountId": accountId,
+      "amount": {
+        "nano": amount_nano,
+        "currency": amount_currency,
+        "units": amount_units
+      }
+    }
+    const url = 'tinkoff.public.invest.api.contract.v1.SandboxService/SandboxPayIn';
+    const data = this._makeApiCall(url, requestBody);
+    return data;
+  }
   // ----------------------------- UsersService -----------------------------
   _GetAccounts() {
     const url = 'tinkoff.public.invest.api.contract.v1.UsersService/GetAccounts'
+    const data = this._makeApiCall(url,{})
+    return data
+  }
+  _GetUserTariff() {
+    const url = 'tinkoff.public.invest.api.contract.v1.UsersService/GetUserTariff'
     const data = this._makeApiCall(url,{})
     return data
   }
@@ -384,11 +669,24 @@ function TI_GetInstrumentsID() {
   return values
 }
 
+function TI_FindInstrument(query, instrumentKind) {
+  const resp = tinkoffClientV2._FindInstrument(query, instrumentKind);
+  if (resp.instruments.length == 1){
+    var instrument = JSON.stringify(resp.instruments[0]);
+    Logger.log(`instrument ${instrument}`)
+    return resp.instruments[0];
+  } else {
+    var msg = `Refine your query`
+    Logger.log(msg);
+    return msg;
+  }
+}
+
 function TI_GetLastPriceByFigi(figi) {
   if (figi) {
     const data = tinkoffClientV2._GetLastPrices([figi])
     if (data.lastPrices[0].price)
-      return Number(data.lastPrices[0].price.units) + data.lastPrices[0].price.nano/1000000000
+      return tinkoffClientV2._UnitsNanoToPrice(data.lastPrices[0].price.units, data.lastPrices[0].price.nano)
   }
   return null
 }
@@ -408,7 +706,7 @@ function TI_GetAccounts() {
   for (let i=0; i<data.accounts.length; i++) {
     values.push([data.accounts[i].id, data.accounts[i].type.replace('ACCOUNT_TYPE_',''), data.accounts[i].name, data.accounts[i].status.replace('ACCOUNT_STATUS_',''), isoToDate(data.accounts[i].openedDate), data.accounts[i].accessLevel.replace('ACCOUNT_ACCESS_LEVEL_','')])
   }
-  
+
   return values
 }
 
@@ -419,6 +717,7 @@ function TI_GetAccountID(accountNum) {
     return data.accounts[accountNum].id
   }
 }
+
 
 /**
  * Получение Bid/Ask спреда инструмента по тикеру
@@ -510,7 +809,7 @@ function TI_GetOperations(accountId,from_param, to_param) {
   } else {
     to = to_param.toISOString()
   }
-  
+
   let hasNext = false, nextCursor = null
 
   do {
@@ -542,7 +841,7 @@ function TI_GetOperations(accountId,from_param, to_param) {
           totalQuantity = -totalQuantity
           totalSum = -totalSum
         }
-      
+
         if (!totalQuantity) {
           totalQuantity=null
           totalSum=null
@@ -577,3 +876,169 @@ function TI_GetOperations(accountId,from_param, to_param) {
   return values
 }
 
+function TI_GetSandboxAccounts() {
+  const data = tinkoffClientV2._GetSandboxAccounts();
+
+  const values = []
+  // values.push(["ID","Тип","Название","Статус","Открыт","Права доступа"])
+  for (let i=0; i<data.accounts.length; i++) {
+    values.push([data.accounts[i].id, data.accounts[i].type.replace('ACCOUNT_TYPE_',''), data.accounts[i].name, data.accounts[i].status.replace('ACCOUNT_STATUS_',''), isoToDate(data.accounts[i].openedDate), data.accounts[i].accessLevel.replace('ACCOUNT_ACCESS_LEVEL_','')])
+  }
+
+  return values
+}
+
+function TI_GetSandboxOrders(accountId) { // TODO: prices columns
+  const data = tinkoffClientV2._GetSandboxOrders(accountId);
+  const dataOrders = data.orders.map(item => item);
+  const values = [];
+  values.push(_JsonToKV(dataOrders[0]).keys);
+  var dataOrdersValues = dataOrders.map(v => _JsonToKV(v).values)
+  for (let i=0; i<dataOrders.length; i++) {
+    var item = _JsonToKV(dataOrdersValues.pop(i));
+    values.push(item.values)
+  }
+  return values
+}
+
+// ------------------------------------------- Installable Triggers -------------------------------------------
+
+/**
+ * set Figi by value from IntrumentName in a row on the "Orders" sheet
+ */
+
+function TI_Utils_UnitsNanoToPrice(units, nano) {
+  var concatenatedValue = units.toString() + nano.toString();
+  var combinedNumber = parseFloat(concatenatedValue);
+  return combinedNumber;
+}
+
+function TI_Utils_UnitsNanoToPrice(jsonData) {
+  var concatenatedValue = jsonData.units.toString() + jsonData.nano.toString();
+  var combinedNumber = parseFloat(concatenatedValue);
+  return combinedNumber;
+}
+
+function TI_Utils_PriceToUnitsNano(combinedValue) {
+  var stringValue = combinedValue.toString().split(".");
+  return { "units": Number(stringValue[0]), "nano": Number(stringValue[1]) };
+}
+
+function _JsonToKV(data) {
+  var keys = [];
+  var values = [];
+  for (var key in data) {
+    keys.push(key);
+    values.push(data[key]);
+  }
+  return {"keys": keys, "values": values}
+}
+
+function _createTransaction(row) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var activeRow = ss.getActiveSheet().getRange("A10:J10").getValues();
+  var orderTypeRange = ss.getActiveSheet().getRange(row,7);
+  var orderIdRange = ss.getActiveSheet().getRange(row,9);
+
+  // Validation
+  var errors = []
+  if (activeRow.includes(null) || activeRow.includes("")) {
+    errors.push(`Error: Fill in all cells in a row ${row}`)
+  }
+  if (orderTypeRange.getValue() == "" || orderTypeRange.getValue() == "ORDER_TYPE_UNSPECIFIED") {
+    errors.push(`Error: orderType in ${orderTypeRange.getA1Notation()} cant be empty or "ORDER_TYPE_UNSPECIFIED"`);
+  }
+  if (errors.length > 0) {
+    SpreadsheetApp.getUi().alert(errors.join(",\n"));
+    return;
+  }
+
+  var activeSs = ss.getActiveSheet();
+  var price = TI_Utils_PriceToUnitsNano(activeSs.getRange(row, 6).getValue());
+  var direction = activeSs.getRange(row, 8);
+  var directionValue = direction.getValue();
+  var respData = null;
+
+  // Creation
+  if (orderIdRange.getValue() == "") {
+    if (ss.getRangeByName("IS_SANDBOX").getValue() == true){
+      SpreadsheetApp.getUi().alert("YOU'RE IN SANDBOX MODE");
+      respData = tinkoffClientV2._PostSandboxOrder(
+        activeSs.getRange(row, 4).getValue(),
+        activeSs.getRange(row, 5).getValue(),
+        price.nano,
+        price.units,
+        directionValue,
+        activeSs.getRange(row, 1).getValue(),
+        activeSs.getRange(row, 7).getValue()
+      );
+    } else {
+      respData = tinkoffClientV2._PostOrder(
+        activeSs.getRange(row, 4).getValue(),
+        activeSs.getRange(row, 5).getValue(),
+        price.nano,
+        price.units,
+        directionValue,
+        activeSs.getRange(row, 1).getValue(),
+        activeSs.getRange(row, 7).getValue()
+      );
+    }
+    if (respData) {
+      var data = _JsonToKV(respData);
+      activeSs.getRange(10, 9,1, data.keys.length).setValues([data.keys]);
+      activeSs.getRange(row, 9,1, data.keys.length).setValues([data.values]);
+      activeSs.getRange(row, 10).setValue(respData.executionReportStatus.replace("EXECUTION_REPORT_STATUS_", ""));
+      activeSs.getRange(row, 13).setValue(`${tinkoffClientV2._UnitsNanoToPrice(respData.initialOrderPrice.units, respData.initialOrderPrice.nano)} ${respData.initialOrderPrice.currency}`);
+      activeSs.getRange(row, 14).setValue(`${tinkoffClientV2._UnitsNanoToPrice(respData.executedOrderPrice.units, respData.executedOrderPrice.nano)} ${respData.executedOrderPrice.currency}`);
+      activeSs.getRange(row, 15).setValue(`${tinkoffClientV2._UnitsNanoToPrice(respData.totalOrderAmount.units, respData.totalOrderAmount.nano)} ${respData.totalOrderAmount.currency}`);
+      activeSs.getRange(row, 16).setValue(`${tinkoffClientV2._UnitsNanoToPrice(respData.initialCommission.units, respData.initialCommission.nano)} ${respData.initialCommission.currency}`);
+      activeSs.getRange(row, 17).setValue(`${tinkoffClientV2._UnitsNanoToPrice(respData.executedCommission.units, respData.executedCommission.nano)} ${respData.executedCommission.currency}`);
+      activeSs.getRange(row, 20).setValue(`${tinkoffClientV2._UnitsNanoToPrice(respData.initialSecurityPrice.units, respData.initialSecurityPrice.nano)} ${respData.initialSecurityPrice.currency}`);
+      if (directionValue == "ORDER_DIRECTION_SELL"){
+        orderIdRange.setBackground("red");
+      } else if (directionValue == "ORDER_DIRECTION_BUY"){
+        orderIdRange.setBackground("green");
+      }
+    }
+  } else {
+    SpreadsheetApp.getUi().alert(`The deal has already been assigned an orderId ${orderIdRange.getValue()}`)
+  }
+}
+
+function _testCreateTransaction(){
+  _createTransaction(11);
+}
+
+function onEditOrdersSheet(e) {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    if (ss.getActiveSheet().getName() != "Orders") {
+      return;
+    }
+    var activeCell = ss.getActiveCell();
+    var col = activeCell.getColumn();
+    var row = activeCell.getRow();
+    if ((col == 2 || col == 3) && row > 10) { //InstrumentName, InstrumentKind
+      var instrumentNameRange = ss.getActiveSheet().getRange(row,2);
+      var instrumentKindRange = ss.getActiveSheet().getRange(row,3);
+      var figiRange = ss.getActiveSheet().getRange(row,4);
+      var priceRange = ss.getActiveSheet().getRange(row,6);
+
+      figiRange.setValue(null).setFontColor(null);
+      var foundInstrument = TI_FindInstrument(instrumentNameRange.getValue(), instrumentKindRange.getValue());
+      Logger.log(`figiRange ${figiRange.getA1Notation()}, foundInstrument ${foundInstrument.figi}, type ${instrumentKindRange.getValue()}`);
+      if (typeof(foundInstrument) != "string"){
+        figiRange.setValue(foundInstrument.figi);
+        priceRange.setValue(TI_GetLastPriceByFigi(foundInstrument.figi));
+      } else {
+        figiRange.setValue(foundInstrument).setFontColor("red");
+        priceRange.setValue(null);
+      }
+    } else if (col == 8 && row > 10) {
+      if (ss.getActiveSheet().getRange(row, col).getValue() != "ORDER_DIRECTION_UNSPECIFIED") {
+        _createTransaction(row);
+      }
+    } else {
+      Logger.log("conditions do not match")
+      return;
+    }
+}
