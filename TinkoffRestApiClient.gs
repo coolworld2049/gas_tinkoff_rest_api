@@ -98,6 +98,26 @@ function isoToDate(dateStr){
   return new Date(str)
 }
 
+function convertToISODate(dateString) {
+  // Split the input date string into day, month, and year
+  var dateParts = dateString.split('.');
+
+  // Ensure that the date has three parts (day, month, year)
+  if (dateParts.length !== 3) {
+    throw new Error("Invalid date format. Expected format: dd.mm.yyyy");
+  }
+
+  // Parse the date parts as integers
+  var day = parseInt(dateParts[0]);
+  var month = parseInt(dateParts[1]);
+  var year = parseInt(dateParts[2]);
+
+  // Create a JavaScript Date object in ISO format
+  var isoDate = new Date(year, month - 1, day).toISOString();
+
+  return isoDate;
+}
+
 class TinkoffClientV1 {
   // Doc: https://tinkoffcreditsystems.github.io/invest-openapi/swagger-ui/
   // How to create a token: https://tinkoffcreditsystems.github.io/invest-openapi/auth/
@@ -348,9 +368,6 @@ class _TinkoffClientV2 {
       return respObj
     else
       throw new Error(`Ошибка ${respCode} - ${respObj.message} - ${respObj.description}`);
-  }
-  _UnitsNanoToPrice(units, nano) {
-    return Number(units) + nano/1000000000;
   }
   // ----------------------------- InstrumentsService -----------------------------
   _Bonds(instrumentStatus) {
@@ -644,7 +661,20 @@ class _TinkoffClientV2 {
     const data = this._makeApiCall(url,{})
     return data
   }
+  // ----------------------------- MarketDataService -----------------------------
+  _GetCandles(figi,from_,to,interval) {
+    const url = 'tinkoff.public.invest.api.contract.v1.MarketDataService/GetCandles'
+    const data = this._makeApiCall(url,{
+      "figi": figi,
+      "from": from_,
+      "to": to,
+      "interval": interval,
+    })
+    return data
+  }
 }
+
+
 
 const tinkoffClientV2 = new _TinkoffClientV2(OPENAPI_TOKEN)
 
@@ -669,6 +699,133 @@ function TI_GetInstrumentsID() {
   return values
 }
 
+function getAllCandles(figi,interval,from_,to) {
+  from_ = convertToISODate(from_);
+  to = convertToISODate(to);
+
+  var previousCandles = new Set();
+  var allCandles = [];
+
+  //--------------
+  const DAYS_IN_YEAR = 365;
+  const MAX_INTERVALS = {
+    "CANDLE_INTERVAL_1_MIN": { days: 1 },
+    "CANDLE_INTERVAL_2_MIN": { days: 1 },
+    "CANDLE_INTERVAL_3_MIN": { days: 1 },
+    "CANDLE_INTERVAL_5_MIN": { days: 1 },
+    "CANDLE_INTERVAL_10_MIN": { days: 1 },
+    "CANDLE_INTERVAL_15_MIN": { days: 1 },
+    "CANDLE_INTERVAL_30_MIN": { days: 1 },
+    "CANDLE_INTERVAL_HOUR": { weeks: 1 },
+    "CANDLE_INTERVAL_2_HOUR": { weeks: 1 },
+    "CANDLE_INTERVAL_4_HOUR": { weeks: 1 },
+    "CANDLE_INTERVAL_DAY": { days: DAYS_IN_YEAR },
+    "CANDLE_INTERVAL_WEEK": { days: DAYS_IN_YEAR },
+    "CANDLE_INTERVAL_MONTH": { days: DAYS_IN_YEAR * 3 },
+  };
+  const CANDLE_INTERVAL_TO_TIMEDELTA_MAPPING = {
+    "CANDLE_INTERVAL_1_MIN": { minutes: 1 },
+    "CANDLE_INTERVAL_2_MIN": { minutes: 2 },
+    "CANDLE_INTERVAL_3_MIN": { minutes: 3 },
+    "CANDLE_INTERVAL_5_MIN": { minutes: 5 },
+    "CANDLE_INTERVAL_10_MIN": { minutes: 10 },
+    "CANDLE_INTERVAL_15_MIN": { minutes: 15 },
+    "CANDLE_INTERVAL_30_MIN": { minutes: 30 },
+    "CANDLE_INTERVAL_HOUR": { hours: 1 },
+    "CANDLE_INTERVAL_2_HOUR": { hours: 2 },
+    "CANDLE_INTERVAL_4_HOUR": { hours: 4 },
+    "CANDLE_INTERVAL_DAY": { days: 1 },
+    "CANDLE_INTERVAL_WEEK": { weeks: 1 },
+    "CANDLE_INTERVAL_MONTH": { days: 30 },
+    "CANDLE_INTERVAL_UNSPECIFIED": { minutes: 1 },
+  };
+
+
+  function candleIntervalMappingToMS(interval_mapping) {
+    function getMillisecondsForUnit(unit) {
+      switch (unit) {
+        case "minutes":
+          return 60 * 1000; // 1 minute in milliseconds
+        case "hours":
+          return 60 * 60 * 1000; // 1 hour in milliseconds
+        case "days":
+          return 24 * 60 * 60 * 1000; // 1 day in milliseconds
+        case "weeks":
+          return 7 * 24 * 60 * 60 * 1000; // 1 week in milliseconds
+        default:
+          return 0; // Unsupported unit
+      }
+    }
+    let totalMilliseconds = 0;
+    for (const unit in interval_mapping) {
+      const value = interval_mapping[unit];
+      totalMilliseconds += value * getMillisecondsForUnit(unit);
+    }
+    return totalMilliseconds
+  }
+  function getIntervals(interval_mapping, from_, to) {
+    var intervals = [];
+    const maxInterval = candleIntervalMappingToMS(MAX_INTERVALS[interval_mapping]);
+    let localFrom = new Date(from_);
+    let localTo = new Date(to)
+    const intervalTimeDelta = candleIntervalMappingToMS(CANDLE_INTERVAL_TO_TIMEDELTA_MAPPING[interval_mapping]);
+    while (localFrom.getTime() + intervalTimeDelta <= localTo.getTime()) {
+      intervals.push([localFrom, new Date(Math.min(localFrom.getTime() + maxInterval, localTo.getTime()))]);
+      localFrom = new Date(localFrom.getTime() + maxInterval);
+    }
+    return intervals;
+  }
+  //--------------
+  function getCandles(figi, interval, currentFrom, currentTo, i) {
+    console.log([i, figi, interval, currentFrom, currentTo].join(', '));
+    var data = tinkoffClientV2._GetCandles(figi,currentFrom,currentTo,interval)
+    return data.candles;
+  }
+  var intervals = getIntervals(interval, from_, to);
+  for (var i = 0; i < intervals.length; i++) {
+    const [currentFrom, currentTo] = intervals[i];
+    try {
+      var _candles = getCandles(figi, interval, currentFrom, currentTo, i);
+    } catch (e) {
+      console.log("sleep 1 min");
+      Utilities.sleep(61000);
+      _candles = getCandles(figi, interval, currentFrom, currentTo, i);
+    }
+    for (var j = 0; j < _candles.length; j++) {
+      var candle = _candles[j];
+      if (!previousCandles.has(candle)) {
+        allCandles.push(candle);
+      }
+    }
+    previousCandles = new Set(_candles);
+  }
+  return {"candles": allCandles};
+}
+
+function TI_GetAllCandles(figi,interval,from_,to) {
+  const data = getAllCandles(figi,interval,from_,to)
+  //console.log(data)
+  const values = []
+  values.push(["Open","High","Low","Close","Volume","Time","IsComplete"])
+  for (let i=0; i < data.candles.length; i++) {
+    values.push([
+      TI_Utils_UnitsNanoToPrice(data.candles[i].open),
+      TI_Utils_UnitsNanoToPrice(data.candles[i].high),
+      TI_Utils_UnitsNanoToPrice(data.candles[i].low),
+      TI_Utils_UnitsNanoToPrice(data.candles[i].close),
+      data.candles[i].volume,
+      isoToDate(data.candles[i].time).toISOString(),
+      data.candles[i].isComplete
+    ])
+  }
+  console.log(values)
+  return values
+}
+
+function DEBUG_TI_GetAllCandles() {
+  TI_GetAllCandles("USD000UTSTOM", "CANDLE_INTERVAL_2_HOUR", "15.09.2022", "15.09.2023")
+}
+
 function TI_FindInstrument(query, instrumentKind) {
   const resp = tinkoffClientV2._FindInstrument(query, instrumentKind);
   if (resp.instruments.length == 1){
@@ -686,7 +843,7 @@ function TI_GetLastPriceByFigi(figi) {
   if (figi) {
     const data = tinkoffClientV2._GetLastPrices([figi])
     if (data.lastPrices[0].price)
-      return tinkoffClientV2._UnitsNanoToPrice(data.lastPrices[0].price.units, data.lastPrices[0].price.nano)
+      return TI_Utils_UnitsNanoToPrice(data.lastPrices[0].price)
   }
   return null
 }
@@ -704,7 +861,13 @@ function TI_GetAccounts() {
   const values = []
   values.push(["ID","Тип","Название","Статус","Открыт","Права доступа"])
   for (let i=0; i<data.accounts.length; i++) {
-    values.push([data.accounts[i].id, data.accounts[i].type.replace('ACCOUNT_TYPE_',''), data.accounts[i].name, data.accounts[i].status.replace('ACCOUNT_STATUS_',''), isoToDate(data.accounts[i].openedDate), data.accounts[i].accessLevel.replace('ACCOUNT_ACCESS_LEVEL_','')])
+    values.push([
+      data.accounts[i].id,
+      data.accounts[i].type.replace('ACCOUNT_TYPE_',''),
+      data.accounts[i].name,
+      data.accounts[i].status.replace('ACCOUNT_STATUS_',''),
+      isoToDate(data.accounts[i].openedDate),
+      data.accounts[i].accessLevel.replace('ACCOUNT_ACCESS_LEVEL_','')])
   }
 
   return values
@@ -750,13 +913,12 @@ function TI_GetPortfolio(accountId, currency, isSandbox) {
   values.push(["Тикер","Название","Тип","Кол-во","Ср.цена покупки","Ст-ть покупки","Валюта","Доход","Тек.ст-ть","Валюта","НКД","Валюта"])
   for (let i=0; i<portfolio.positions.length; i++) {
     const [ticker,name] = _GetTickerNameByFIGI(portfolio.positions[i].figi)
-    let quantity = Number(portfolio.positions[i].quantity.units) + portfolio.positions[i].quantity.nano/1000000000
-    let averagePositionPrice = portfolio.positions[i].averagePositionPrice ?
-      Number(portfolio.positions[i].averagePositionPrice.units) + portfolio.positions[i].averagePositionPrice.nano/1000000000 : null
+    let quantity = TI_Utils_UnitsNanoToPrice(portfolio.positions[i].quantity)
+    let averagePositionPrice = portfolio.positions[i].averagePositionPrice ? TI_Utils_UnitsNanoToPrice(portfolio.positions[i].averagePositionPrice) : null
     let currentNkd=null
     let currentNkd_currency=null
     if(portfolio.positions[i].currentNkd) {
-      currentNkd = Number(portfolio.positions[i].currentNkd.units) + portfolio.positions[i].currentNkd.nano/1000000000
+      currentNkd = TI_Utils_UnitsNanoToPrice(portfolio.positions[i].currentNkd)
       currentNkd_currency = portfolio.positions[i].currentNkd.currency
     }
     values.push([
@@ -767,8 +929,8 @@ function TI_GetPortfolio(accountId, currency, isSandbox) {
       averagePositionPrice,
       quantity * averagePositionPrice,
       portfolio.positions[i].averagePositionPrice ? portfolio.positions[i].averagePositionPrice.currency : null,
-      portfolio.positions[i].expectedYield ? Number(portfolio.positions[i].expectedYield.units) + portfolio.positions[i].expectedYield.nano/1000000000 : null,
-      portfolio.positions[i].currentPrice ? (Number(portfolio.positions[i].currentPrice.units) + portfolio.positions[i].currentPrice.nano/1000000000) * quantity : null,
+      portfolio.positions[i].expectedYield ? TI_Utils_UnitsNanoToPrice(portfolio.positions[i].expectedYield) : null,
+      portfolio.positions[i].currentPrice ? TI_Utils_UnitsNanoToPrice(portfolio.positions[i].currentPrice) * quantity : null,
       portfolio.positions[i].currentPrice ? portfolio.positions[i].currentPrice.currency : null,
       currentNkd,
       currentNkd_currency
@@ -782,7 +944,7 @@ function _TI_CalculateTrades(trades) {
   let totalQuantity = 0
   for (let j in trades) {
     const {quantity, price} = trades[j]
-    let price_val = Number(price.units) + price.nano/1000000000
+    let price_val = TI_Utils_UnitsNanoToPrice(price)
     totalQuantity += Number(quantity)
     totalSum += Number(quantity) * price_val
   }
@@ -826,17 +988,17 @@ function TI_GetOperations(accountId,from_param, to_param) {
       for (let i=0; i<data.items.length; i++) {
         const {date, type, tradesInfo, figi, payment, price, quantity, commission, accruedInt} = data.items[i]
 
-        let payment_val = Number(payment.units)+payment.nano/1000000000
-        let accruedInt_val = Number(accruedInt.units)+accruedInt.nano/1000000000
+        let payment_val = TI_Utils_UnitsNanoToPrice(payment)
+        let accruedInt_val = TI_Utils_UnitsNanoToPrice(accruedInt)
 
-        let com_val = Number(commission.units)+commission.nano/1000000000
+        let com_val = TI_Utils_UnitsNanoToPrice(commission)
         let full_payment_val = payment_val + com_val
 
         if(tradesInfo) {
           [totalQuantity, totalSum, weigthedPrice] = _TI_CalculateTrades(tradesInfo.trades)
         } else {
           totalQuantity = Number(quantity)
-          weigthedPrice = Number(price.units)+price.nano/1000000000
+          weigthedPrice = TI_Utils_UnitsNanoToPrice(price)
           totalSum = totalQuantity * weigthedPrice
         }
 
@@ -910,16 +1072,8 @@ function TI_GetSandboxOrders(accountId) { // TODO: prices columns
  * set Figi by value from IntrumentName in a row on the "Orders" sheet
  */
 
-function TI_Utils_UnitsNanoToPrice(units, nano) {
-  var concatenatedValue = units.toString() + nano.toString();
-  var combinedNumber = parseFloat(concatenatedValue);
-  return combinedNumber;
-}
-
-function TI_Utils_UnitsNanoToPrice(jsonData) {
-  var concatenatedValue = jsonData.units.toString() + jsonData.nano.toString();
-  var combinedNumber = parseFloat(concatenatedValue);
-  return combinedNumber;
+function TI_Utils_UnitsNanoToPrice(data) {
+  return Number(data.units) + data.nano/1000000000;
 }
 
 function TI_Utils_PriceToUnitsNano(combinedValue) {
@@ -991,12 +1145,12 @@ function _createTransaction(row) {
       activeSs.getRange(10, 9,1, data.keys.length).setValues([data.keys]);
       activeSs.getRange(row, 9,1, data.keys.length).setValues([data.values]);
       activeSs.getRange(row, 10).setValue(respData.executionReportStatus.replace("EXECUTION_REPORT_STATUS_", ""));
-      activeSs.getRange(row, 13).setValue(`${tinkoffClientV2._UnitsNanoToPrice(respData.initialOrderPrice.units, respData.initialOrderPrice.nano)} ${respData.initialOrderPrice.currency}`);
-      activeSs.getRange(row, 14).setValue(`${tinkoffClientV2._UnitsNanoToPrice(respData.executedOrderPrice.units, respData.executedOrderPrice.nano)} ${respData.executedOrderPrice.currency}`);
-      activeSs.getRange(row, 15).setValue(`${tinkoffClientV2._UnitsNanoToPrice(respData.totalOrderAmount.units, respData.totalOrderAmount.nano)} ${respData.totalOrderAmount.currency}`);
-      activeSs.getRange(row, 16).setValue(`${tinkoffClientV2._UnitsNanoToPrice(respData.initialCommission.units, respData.initialCommission.nano)} ${respData.initialCommission.currency}`);
-      activeSs.getRange(row, 17).setValue(`${tinkoffClientV2._UnitsNanoToPrice(respData.executedCommission.units, respData.executedCommission.nano)} ${respData.executedCommission.currency}`);
-      activeSs.getRange(row, 20).setValue(`${tinkoffClientV2._UnitsNanoToPrice(respData.initialSecurityPrice.units, respData.initialSecurityPrice.nano)} ${respData.initialSecurityPrice.currency}`);
+      activeSs.getRange(row, 13).setValue(`${TI_Utils_UnitsNanoToPrice(respData.initialOrderPrice)} ${respData.initialOrderPrice.currency}`);
+      activeSs.getRange(row, 14).setValue(`${TI_Utils_UnitsNanoToPrice(respData.executedOrderPrice)} ${respData.executedOrderPrice.currency}`);
+      activeSs.getRange(row, 15).setValue(`${TI_Utils_UnitsNanoToPrice(respData.totalOrderAmount)} ${respData.totalOrderAmount.currency}`);
+      activeSs.getRange(row, 16).setValue(`${TI_Utils_UnitsNanoToPrice(respData.initialCommission)} ${respData.initialCommission.currency}`);
+      activeSs.getRange(row, 17).setValue(`${TI_Utils_UnitsNanoToPrice(respData.executedCommission)} ${respData.executedCommission.currency}`);
+      activeSs.getRange(row, 20).setValue(`${TI_Utils_UnitsNanoToPrice(respData.initialSecurityPrice)} ${respData.initialSecurityPrice.currency}`);
       if (directionValue == "ORDER_DIRECTION_SELL"){
         orderIdRange.setBackground("red");
       } else if (directionValue == "ORDER_DIRECTION_BUY"){
